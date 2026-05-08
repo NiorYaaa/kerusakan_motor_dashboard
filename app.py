@@ -138,16 +138,23 @@ st.markdown("""
 # File ini didownload dari Firebase Console > Project Settings >
 # Service Accounts > Generate New Private Key
 
+import json
+
 @st.cache_resource
 def init_firebase():
     """Inisialisasi koneksi Firebase (hanya sekali)"""
     if not firebase_admin._apps:
         try:
-            # Prioritas 1: Baca dari Streamlit Secrets (Untuk Cloud Hosting)
-            key_dict = dict(st.secrets["firebase_service_account"])
-            cred = credentials.Certificate(key_dict)
+            # Cara Mudah: Baca seluruh isi file JSON dari satu field Secrets
+            if "firebase_service_account" in st.secrets:
+                json_content = st.secrets["firebase_service_account"]["content"]
+                # Cek jika content adalah string JSON, jika ya load jadi dict
+                key_dict = json.loads(json_content)
+                cred = credentials.Certificate(key_dict)
+            else:
+                raise Exception("Secrets tidak ditemukan")
         except Exception:
-            # Prioritas 2: Baca dari file lokal (Untuk Dev/Testing Lokal)
+            # Fallback ke file lokal jika di komputer sendiri
             cred = credentials.Certificate("kerusakanmotor-3dea8-firebase-adminsdk-fbsvc-44d1f159ad.json")
             
         firebase_admin.initialize_app(cred, {
