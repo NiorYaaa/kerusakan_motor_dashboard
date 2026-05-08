@@ -1,0 +1,7 @@
+streamlit
+firebase-admin
+plotly
+scikit-learn
+joblib
+pandas
+numpy
