@@ -145,17 +145,27 @@ def init_firebase():
     """Inisialisasi koneksi Firebase (hanya sekali)"""
     if not firebase_admin._apps:
         try:
-            # Cara Mudah: Baca seluruh isi file JSON dari satu field Secrets
+            # 1. Cek apakah ada Secrets di Streamlit Cloud
             if "firebase_service_account" in st.secrets:
-                json_content = st.secrets["firebase_service_account"]["content"]
-                # Cek jika content adalah string JSON, jika ya load jadi dict
-                key_dict = json.loads(json_content)
-                cred = credentials.Certificate(key_dict)
+                # Cara A: Format "content" (Seluruh isi JSON dipaste ke satu field)
+                if "content" in st.secrets["firebase_service_account"]:
+                    json_content = st.secrets["firebase_service_account"]["content"]
+                    key_dict = json.loads(json_content)
+                    cred = credentials.Certificate(key_dict)
+                # Cara B: Format Terurai (Key-Value satu per satu)
+                else:
+                    key_dict = dict(st.secrets["firebase_service_account"])
+                    cred = credentials.Certificate(key_dict)
             else:
-                raise Exception("Secrets tidak ditemukan")
-        except Exception:
-            # Fallback ke file lokal jika di komputer sendiri
-            cred = credentials.Certificate("kerusakanmotor-3dea8-firebase-adminsdk-fbsvc-44d1f159ad.json")
+                raise Exception("Data 'firebase_service_account' tidak ditemukan di Secrets")
+                
+        except Exception as e:
+            # 2. Fallback ke file lokal (Hanya untuk testing di komputer sendiri)
+            try:
+                cred = credentials.Certificate("kerusakanmotor-3dea8-firebase-adminsdk-fbsvc-44d1f159ad.json")
+            except Exception:
+                st.error(f"❌ ERROR KONEKSI: Sistem tidak menemukan kunci akses Firebase di Secrets maupun file lokal. Pesan: {e}")
+                st.stop()
             
         firebase_admin.initialize_app(cred, {
             "databaseURL": st.secrets["firebase_database_url"]
