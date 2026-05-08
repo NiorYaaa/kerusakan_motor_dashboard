@@ -150,7 +150,8 @@ def init_firebase():
                 # Cara A: Format "content" (Seluruh isi JSON dipaste ke satu field)
                 if "content" in st.secrets["firebase_service_account"]:
                     json_content = st.secrets["firebase_service_account"]["content"]
-                    key_dict = json.loads(json_content)
+                    # Gunakan strict=False agar lebih toleran terhadap karakter "Enter" atau baris baru
+                    key_dict = json.loads(json_content, strict=False)
                     cred = credentials.Certificate(key_dict)
                 # Cara B: Format Terurai (Key-Value satu per satu)
                 else:
