@@ -662,24 +662,59 @@ with tab_riwayat:
             }
         )
 
-        # --- Tombol Download CSV ---
+        # --- Tombol Download Excel & CSV ---
         # Bulatkan kolom numerik agar rapi di Excel
         df_export = df_tampil.copy()
         df_export["Getaran (G)"]       = df_export["Getaran (G)"].round(4)
         df_export["Suara (dB)"]        = df_export["Suara (dB)"].round(2)
         df_export["Keyakinan AI (%)"]  = df_export["Keyakinan AI (%)"].round(2)
 
-        # Gunakan sep=';' agar Excel (regional Indonesia) langsung terbaca per kolom
-        # utf-8-sig menambahkan BOM agar karakter khusus tidak rusak
-        csv_data = df_export.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
-        nama_file = f"laporan_anomali_{datetime.now().strftime('%d%m%Y_%H%M%S')}.csv"
-        st.download_button(
-            label="⬇️ Download Laporan CSV",
-            data=csv_data,
-            file_name=nama_file,
-            mime="text/csv",
-            type="primary"
-        )
+        col_dl1, col_dl2 = st.columns(2)
+
+        # --- OPSI 1: Download Excel (.xlsx) - REKOMENDASI ---
+        with col_dl1:
+            import io
+            buffer_xlsx = io.BytesIO()
+            with pd.ExcelWriter(buffer_xlsx, engine="openpyxl") as writer:
+                df_export.to_excel(writer, index=False, sheet_name="Riwayat Anomali")
+                # Auto-fit lebar kolom agar tanggal dll tidak terpotong
+                worksheet = writer.sheets["Riwayat Anomali"]
+                for col_idx, column in enumerate(df_export.columns, 1):
+                    # Hitung lebar maks dari header vs isi data
+                    max_length = len(str(column))
+                    for row_val in df_export[column]:
+                        cell_len = len(str(row_val))
+                        if cell_len > max_length:
+                            max_length = cell_len
+                    # Tambahkan padding dan set lebar kolom
+                    adjusted_width = max_length + 4
+                    col_letter = worksheet.cell(row=1, column=col_idx).column_letter
+                    worksheet.column_dimensions[col_letter].width = adjusted_width
+            buffer_xlsx.seek(0)
+            nama_xlsx = f"laporan_anomali_{datetime.now().strftime('%d%m%Y_%H%M%S')}.xlsx"
+            st.download_button(
+                label="⬇️ Download Excel (.xlsx)",
+                data=buffer_xlsx.getvalue(),
+                file_name=nama_xlsx,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
+
+        # --- OPSI 2: Download CSV (fallback) ---
+        with col_dl2:
+            # Paksa kolom Tanggal menjadi teks murni agar Excel tidak auto-format
+            df_csv = df_export.copy()
+            df_csv["Tanggal"] = df_csv["Tanggal"].apply(lambda x: f'="{x}"')
+            # Gunakan sep=';' agar Excel (regional Indonesia) langsung terbaca per kolom
+            csv_data = df_csv.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+            nama_csv = f"laporan_anomali_{datetime.now().strftime('%d%m%Y_%H%M%S')}.csv"
+            st.download_button(
+                label="⬇️ Download CSV",
+                data=csv_data,
+                file_name=nama_csv,
+                mime="text/csv",
+                type="secondary"
+            )
 
 # ============================================================
 #  LOOP UTAMA - Auto Refresh Data (Tab Monitor)
