@@ -7,6 +7,8 @@
  Dashboard real-time untuk memantau kondisi mesin/CVT motor
  NMAX berdasarkan data getaran dan suara dari sensor IoT.
  Dilengkapi sistem alerting via email otomatis.
+ Fitur Riwayat Anomali: Mencatat setiap event bahaya ke
+ database lokal SQLite untuk analisis dan pelaporan.
 ============================================================
 """
 
@@ -22,6 +24,7 @@ from datetime import datetime
 from collections import deque
 import joblib
 import os
+import pandas as pd
 
 # ============================================================
 #  KONFIGURASI HALAMAN STREAMLIT
@@ -130,6 +133,79 @@ st.markdown("""
     .vu-seg { flex:1; border-radius:2px; min-width:4px; transition:height 0.3s ease, opacity 0.3s; }
 </style>
 """, unsafe_allow_html=True)
+
+# ============================================================
+#  FUNGSI RIWAYAT ANOMALI (Firebase Realtime Database)
+# ============================================================
+def simpan_riwayat_anomali(getaran, suara, suara_db, status_ai, keyakinan):
+    """Menyimpan satu baris event anomali ke Firebase Realtime Database."""
+    sekarang = datetime.now()
+    tanggal  = sekarang.strftime("%d-%m-%Y")
+    jam      = sekarang.strftime("%H:%M:%S")
+    timestamp = sekarang.strftime("%d-%m-%Y %H:%M:%S")
+    
+    # Bersihkan emoji dari status_ai agar tidak rusak saat dibuka di Excel
+    import re
+    status_bersih = re.sub(r'[^\x00-\x7F\u00C0-\u024F\u0020-\u007E]+', '', status_ai).strip()
+    status_bersih = status_bersih.replace('BAHAYA', 'BAHAYA').replace('AMAN', 'AMAN')
+    # Bulatkan keyakinan ke 2 desimal
+    keyakinan_bulat = round(float(keyakinan), 2)
+    
+    try:
+        ref = db.reference("/RiwayatAnomali")
+        # Firebase auto-generates unique keys when using push()
+        ref.push({
+            "tanggal": tanggal,
+            "jam": jam,
+            "timestamp": timestamp,
+            "getaran": round(getaran, 4),
+            "suara": suara,
+            "suara_db": round(suara_db, 2),
+            "status_ai": status_bersih,
+            "keyakinan": keyakinan_bulat
+        })
+        return True
+    except Exception as e:
+        return False
+
+def ambil_riwayat_anomali(filter_tanggal=None):
+    """Mengambil semua data riwayat dari Firebase, opsional filter per tanggal."""
+    try:
+        ref = db.reference("/RiwayatAnomali")
+        data = ref.get()
+        
+        if not data:
+            return pd.DataFrame()
+            
+        # Format dictionary dari Firebase ke List of Dictionaries
+        list_data = []
+        counter = 1
+        for key, value in data.items():
+            row = value.copy()
+            row["id"] = counter
+            list_data.append(row)
+            counter += 1
+            
+        df = pd.DataFrame(list_data)
+        
+        # Sort descending (id terbaru di atas)
+        if not df.empty:
+            df = df.sort_values(by="id", ascending=False)
+            
+            if filter_tanggal:
+                df = df[df["tanggal"] == filter_tanggal]
+                
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+def hapus_semua_riwayat():
+    """Menghapus seluruh data riwayat dari Firebase."""
+    try:
+        ref = db.reference("/RiwayatAnomali")
+        ref.delete()
+    except Exception as e:
+        pass
 
 # ============================================================
 #  INISIALISASI FIREBASE ADMIN SDK
@@ -467,16 +543,150 @@ if "email_terkirim" not in st.session_state:
     st.session_state.email_terkirim = False
 if "waktu_email_terakhir" not in st.session_state:
     st.session_state.waktu_email_terakhir = 0
+if "anomali_tersimpan_id" not in st.session_state:
+    st.session_state.anomali_tersimpan_id = None
 
 # Load AI Model & Scaler
 model_ai, scaler_ai = load_ai_model()
 
-# Placeholder untuk konten yang akan di-refresh
-placeholder_utama = st.empty()
+# ============================================================
+#  TAB UTAMA: Monitoring + Riwayat
+# ============================================================
+tab_monitor, tab_riwayat = st.tabs(["📊 Monitoring Real-Time", "📋 Riwayat Anomali"])
 
 # ============================================================
-#  LOOP UTAMA - Auto Refresh Data
+#  TAB 2: RIWAYAT ANOMALI (Dirender di luar loop agar statis)
 # ============================================================
+with tab_riwayat:
+    st.markdown("""
+    <div style="background:rgba(18,20,36,0.6); border:1px solid rgba(255,255,255,0.08);
+        border-radius:20px; padding:24px; margin-bottom:20px;">
+        <h3 style="color:#f8fafc; margin:0 0 6px;">📋 Log Riwayat Anomali / Kerusakan</h3>
+        <p style="color:#94a3b8; margin:0; font-size:0.9rem;">Setiap kejadian di mana sensor mendeteksi kondisi <b>BAHAYA</b>
+        dicatat otomatis ke dalam tabel ini beserta tanggal, jam, dan detail sensor.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # --- Filter Tanggal ---
+    col_filter1, col_filter2, col_filter3 = st.columns([2, 1, 1])
+    with col_filter1:
+        pilihan_filter = st.radio(
+            "Tampilkan",
+            ["Semua Riwayat", "Filter per Tanggal"],
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+    with col_filter2:
+        if pilihan_filter == "Filter per Tanggal":
+            tgl_filter = st.date_input("Pilih Tanggal", value=datetime.now().date(), label_visibility="collapsed")
+            tgl_str = tgl_filter.strftime("%d-%m-%Y")
+        else:
+            tgl_str = None
+    with col_filter3:
+        if st.button("🗑️ Hapus Semua Riwayat", type="secondary"):
+            hapus_semua_riwayat()
+            st.success("✅ Riwayat berhasil dihapus.")
+            st.rerun()
+
+    # --- Ambil & Tampilkan Data ---
+    df_riwayat = ambil_riwayat_anomali(filter_tanggal=tgl_str)
+
+    if df_riwayat.empty:
+        st.markdown("""
+        <div style="text-align:center; padding:60px 20px; color:#475569;">
+            <div style="font-size:3rem;">📭</div>
+            <p style="font-size:1.1rem; margin-top:10px;">Belum ada anomali yang tercatat.</p>
+            <p style="font-size:0.85rem;">Riwayat akan muncul di sini saat sensor mendeteksi kondisi BAHAYA.</p>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Statistik ringkasan riwayat
+        total_event = len(df_riwayat)
+        avg_get = df_riwayat["getaran"].mean()
+        max_get = df_riwayat["getaran"].max()
+
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="label">🚨 Total Event Bahaya</div>
+                <div class="value value-danger" style="font-size:2.5rem;">{total_event}</div>
+                <div class="unit">Kejadian Tercatat</div>
+            </div>""", unsafe_allow_html=True)
+        with rc2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="label">📳 Rata-rata Getaran</div>
+                <div class="value value-warning" style="font-size:2.5rem;">{avg_get:.3f}</div>
+                <div class="unit">G-Force (Gravitasi)</div>
+            </div>""", unsafe_allow_html=True)
+        with rc3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="label">⚡ Getaran Tertinggi</div>
+                <div class="value value-danger" style="font-size:2.5rem;">{max_get:.3f}</div>
+                <div class="unit">G-Force (Maks)</div>
+            </div>""", unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-top:16px'></div>", unsafe_allow_html=True)
+
+        # Rename kolom agar lebih ramah tampilan
+        df_tampil = df_riwayat[[
+            "id", "tanggal", "jam", "getaran", "suara", "suara_db", "status_ai", "keyakinan"
+        ]].rename(columns={
+            "id": "No.",
+            "tanggal": "Tanggal",
+            "jam": "Jam",
+            "getaran": "Getaran (G)",
+            "suara": "Suara (ADC)",
+            "suara_db": "Suara (dB)",
+            "status_ai": "Status AI",
+            "keyakinan": "Keyakinan AI (%)"
+        })
+
+        st.dataframe(
+            df_tampil,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "No.": st.column_config.NumberColumn(width="small"),
+                "Tanggal": st.column_config.TextColumn(width="medium"),
+                "Jam": st.column_config.TextColumn(width="small"),
+                "Getaran (G)": st.column_config.NumberColumn(format="%.3f G", width="medium"),
+                "Suara (ADC)": st.column_config.NumberColumn(width="medium"),
+                "Suara (dB)": st.column_config.NumberColumn(format="%.1f dB", width="medium"),
+                "Status AI": st.column_config.TextColumn(width="medium"),
+                "Keyakinan AI (%)": st.column_config.ProgressColumn(
+                    min_value=0, max_value=100, format="%.1f%%"
+                ),
+            }
+        )
+
+        # --- Tombol Download CSV ---
+        # Bulatkan kolom numerik agar rapi di Excel
+        df_export = df_tampil.copy()
+        df_export["Getaran (G)"]       = df_export["Getaran (G)"].round(4)
+        df_export["Suara (dB)"]        = df_export["Suara (dB)"].round(2)
+        df_export["Keyakinan AI (%)"]  = df_export["Keyakinan AI (%)"].round(2)
+
+        # Gunakan sep=';' agar Excel (regional Indonesia) langsung terbaca per kolom
+        # utf-8-sig menambahkan BOM agar karakter khusus tidak rusak
+        csv_data = df_export.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+        nama_file = f"laporan_anomali_{datetime.now().strftime('%d%m%Y_%H%M%S')}.csv"
+        st.download_button(
+            label="⬇️ Download Laporan CSV",
+            data=csv_data,
+            file_name=nama_file,
+            mime="text/csv",
+            type="primary"
+        )
+
+# ============================================================
+#  LOOP UTAMA - Auto Refresh Data (Tab Monitor)
+# ============================================================
+with tab_monitor:
+    placeholder_utama = st.empty()
+
 iterasi = 0
 while True:
     iterasi += 1
@@ -522,6 +732,23 @@ while True:
                 ai_status = "BAHAYA 🚨" if is_bahaya else "AMAN ✅"
             except Exception as e:
                 ai_status = f"ERROR AI: {e}"
+
+        # ============================================================
+        #  SIMPAN KE RIWAYAT ANOMALI jika kondisi BAHAYA
+        # ============================================================
+        if is_bahaya:
+            # Cooldown 30 detik agar tidak double-record dalam 1 event
+            waktu_skrg_ts = time.time()
+            if st.session_state.get("waktu_anomali_terakhir", 0) == 0 or \
+               waktu_skrg_ts - st.session_state.get("waktu_anomali_terakhir", 0) > 30:
+                simpan_riwayat_anomali(
+                    getaran=nilai_getaran,
+                    suara=nilai_suara,
+                    suara_db=nilai_db,
+                    status_ai=ai_status,
+                    keyakinan=keyakinan_ai
+                )
+                st.session_state.waktu_anomali_terakhir = waktu_skrg_ts
 
         # Kirim email jika bahaya dan email aktif (cooldown 60 detik)
         if is_bahaya and aktifkan_email:
